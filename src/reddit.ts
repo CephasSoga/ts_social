@@ -1,7 +1,7 @@
 import {z, ZodError } from "zod";
 import { ApifyClient, ActorRun } from 'apify-client';
 import Config from './config';
-import log from './logging';
+import Logger from './logging';
 
 /**
  * RedditScrapingError class.
@@ -201,6 +201,7 @@ interface RedditActorOutput {
 class RedditApifyWrapper {
     private client: ApifyClient;
     private config: Config;
+    private logger;
 
     /**
      * Creates an instance of RedditApifyWrapper.
@@ -211,6 +212,10 @@ class RedditApifyWrapper {
             token: config.items.apifyConfig.token
         });
         this.config = config;
+        this.logger = new Logger(
+            `${this.config.items.logging.dir}/${this.config.items.logging.redditActorLogFile}`,
+            this.config.items.logging.level
+        );
     }
 
     /**
@@ -247,7 +252,7 @@ class RedditApifyWrapper {
             );
         }
     
-        log("info", "Building inputs...");
+        this.logger.log("info", "Building inputs...");
         const input = {
             startUrls: [{ url: `https://www.reddit.com/r/${subreddit}/` }],
             sort,
@@ -258,6 +263,7 @@ class RedditApifyWrapper {
             },
         };
     
+        this.logger.log("info", "Requesting data...");
         try {
             const run: ActorRun = await this.client.actor(this.config.items.apifyConfig.redditActorId).call(input);
             const { items } = await this.client.dataset(run.defaultDatasetId).listItems();
@@ -273,12 +279,12 @@ class RedditApifyWrapper {
                 );
             }
     
-            log("info", "Parsing outputs...");
+            this.logger.log("info", "Parsing outputs...");
             // Validate and parse the first item as CommunityData
             const communityDataResult = CommunityDataSchema.safeParse(items[0]);
             const communityData = communityDataResult.success
                 ? communityDataResult.data
-                : (log(
+                : (this.logger.log(
                       "warn",
                       "Community data validation failed. Falling back to raw data.",
                       { issues: communityDataResult.error.errors }
@@ -293,7 +299,7 @@ class RedditApifyWrapper {
                         if (result.success) {
                             return result.data;
                         } else {
-                            log("warn", "Post data validation failed.", {
+                            this.logger.log("warn", "Post data validation failed.", {
                                 issues: result.error.errors,
                                 item,
                             });
@@ -306,7 +312,7 @@ class RedditApifyWrapper {
             );
             return { communityData, postData };
         } catch (error) {
-            log("error", "Failed to scrape subreddit.", error);
+            this.logger.log("error", "Failed to scrape subreddit.", error);
             throw new RedditScrapingError(
                 "Reddit scraping failed",
                 subreddit,

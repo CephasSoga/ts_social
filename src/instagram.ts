@@ -2,6 +2,7 @@ import {z, ZodError } from "zod";
 import { ApifyClient, ActorRun } from 'apify-client';
 import Config from './config';
 import log from './logging';
+import Logger from "./logging";
 
 interface Header {
     url: string,
@@ -180,12 +181,17 @@ class DataFormatError extends Error {
 class InstagramApifyWrapper {
     private client: ApifyClient;
     private config: Config;
+    private logger: Logger;
 
     constructor(config: Config) {
         this.client = new ApifyClient({
             token: config.items.apifyConfig.token
         });
         this.config = config
+        this.logger = new Logger(
+            `${this.config.items.logging.dir}/${this.config.items.logging.instagramActorLogFile}`,
+            this.config.items.logging.level
+        );
     }
 
     async scrapeInstagramChannel(
@@ -251,7 +257,7 @@ class InstagramApifyWrapper {
         
             // Check if parsedItems contains valid results or fallback to Unexpected
             if (parsedItems.length === 0) {
-                log(
+                this.logger.log(
                     "warn",
                     "No valid data found in the dataset. Fallback structure will be used...",
                     new DataFormatError(
@@ -275,7 +281,7 @@ class InstagramApifyWrapper {
                 { params: this.config.getItems() }
             );
         
-            log("error", "Scraping failed!", actorError);
+            this.logger.log("error", "Scraping failed!", actorError);
             throw actorError;
         }
     }  

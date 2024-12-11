@@ -2,9 +2,16 @@
 
 import fs from 'fs';
 import TOML from 'toml';
+import { string } from 'zod';
 
 /** Interface defining the structure of the configuration items.*/
 interface ConfigItems {
+  logging: {
+    level: string,
+    dir: string,
+    redditActorLogFile: string,
+    instagramActorLogFile: string  
+  },
   apifyConfig: {
     token: string,
     redditActorId: string,
