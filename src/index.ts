@@ -17,6 +17,7 @@ import log from "./logging";
   // Fetch and print Actor results from the run's dataset (if any)
   posts.postData.forEach((item: any) => {
       console.dir(item);
+      console.log("\n*****ID: ", item.id, "\n")
   });
   log("info", "Done!")
 })();

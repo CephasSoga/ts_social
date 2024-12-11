@@ -7,6 +7,8 @@ import TOML from 'toml';
 interface ConfigItems {
   apifyConfig: {
     token: string,
+    redditActorId: string,
+    instagramActorId: string,
   };
 
   proxyConfig: {
@@ -30,7 +32,16 @@ interface ConfigItems {
     maxCommunitiesCount: number;
     maxUserCount: number;
     scrollTimeout: number;
-  }
+  };
+  instagramActorConfig: {
+    baseUrl: string[],
+    targetChannels: string[],
+    resultsType: string,
+    resultsLimit: number,
+    searchType: string,
+    searchLimit: number,
+    addParentData: boolean,
+  };
 }
 
 /**Class responsible for loading and managing the configuration.*/

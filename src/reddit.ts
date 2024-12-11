@@ -234,11 +234,18 @@ class RedditApifyWrapper {
                 "You can set it either in `config.toml` or pass it as an argument to the `scrapeSubreddit` method",
                 subreddit,
                 {sort: sort? sort: null, maxItems: maxItems? maxItems: null, config:this.config.getItems()}
-            );
-            
+            ); 
         }
 
         maxItems = maxItems || this.config.items.redditActorConfig.maxItems;
+        if (!maxItems){
+            throw new RedditScrapingError(
+                "No `resultsLimit` argument was provided." + 
+                "You can set it either in `config.toml` or pass it as an argument to the `scrapeInstagram` method",
+                subreddit,
+                {sort: sort? sort: null, maxItems: maxItems? maxItems: null, config:this.config.getItems()}
+            );
+        }
     
         log("info", "Building inputs...");
         const input = {
@@ -252,7 +259,7 @@ class RedditApifyWrapper {
         };
     
         try {
-            const run: ActorRun = await this.client.actor("trudax/reddit-scraper-lite").call(input);
+            const run: ActorRun = await this.client.actor(this.config.items.apifyConfig.redditActorId).call(input);
             const { items } = await this.client.dataset(run.defaultDatasetId).listItems();
     
             if (!Array.isArray(items) || items.length === 0) {
@@ -266,6 +273,7 @@ class RedditApifyWrapper {
                 );
             }
     
+            log("info", "Parsing outputs...");
             // Validate and parse the first item as CommunityData
             const communityDataResult = CommunityDataSchema.safeParse(items[0]);
             const communityData = communityDataResult.success
@@ -277,7 +285,6 @@ class RedditApifyWrapper {
                   ),
                   items[0] as Unexpected); // Fallback to raw data.
     
-                  log("info", "Parsing outputs...");
             // Validate and parse the rest as PostData[]
             const postData = await Promise.all(
                 items.slice(1).map(async (item) => {
