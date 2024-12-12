@@ -10,12 +10,14 @@ interface ConfigItems {
     level: string,
     dir: string,
     redditActorLogFile: string,
-    instagramActorLogFile: string  
+    instagramActorLogFile: string
+    twitterActorLogFile: string  
   },
   apifyConfig: {
     token: string,
     redditActorId: string,
     instagramActorId: string,
+    twitterActorId: string,
   };
 
   proxyConfig: {
@@ -49,6 +51,29 @@ interface ConfigItems {
     searchLimit: number,
     addParentData: boolean,
   };
+  twitterActorConfig: {
+    baseUrl: string,
+    targetChannels: string[],
+    searchTerms: string[],
+    twitterHandles: string[]
+    conversationIds: string[],
+    maxItems: number,
+    sort: string,
+    tweetLanguage: string,
+    author: string,
+    inReplyTo: string,
+    mentioning: string,
+    geotaggedNear: string,
+    withinRadius: string
+    geocode: string
+    placeObjectId: string
+    minimumRetweets: number
+    minimumFavorites: number
+    minimumReplies: number
+    start: string
+    end: string
+    customMapFunction: string
+  }
 }
 
 /**Class responsible for loading and managing the configuration.*/

@@ -1,27 +1,34 @@
-import RedditApifyWrapper from "./reddit";
-import Config from "./config";
-import Logger from "./logging";
+import { ApifyClient } from 'apify-client';
+import Config from './config';
 
-const logger = new Logger(
-  "logs", "index.log"
-);
+const config = new Config('./config.toml')
 
-// Run the Actor and wait for it to finish
+// Initialize the ApifyClient with API token
+const client = new ApifyClient({
+    token: config.items.apifyConfig.token,
+});
+
+// Prepare Actor input
+const input = {
+  "keyword": "elonmusk",
+  "maximum": 2,
+  "retry": 2,
+  "proxy": {
+      "useApifyProxy": true,
+      "apifyProxyGroups": [
+          "RESIDENTIAL"
+      ]
+  }
+};
+
 (async () => {
+  // Run the Actor and wait for it to finish
+  const run = await client.actor("DDe3hNSgaR7I1wkOc").call(input);
 
-  logger.log("info", "Reading config file...");
-  const confi_path = "./config.toml"
-  const config = new Config(confi_path)
-
-  const subreddit = 'news'; // Define the subreddit you want to scrape
-  logger.log("info", "Creating actor...");
-  const wrapper = new RedditApifyWrapper(config);
-  logger.log("info", "Started scraping...");
-  const posts = await wrapper.scrapeSubreddit(subreddit);
   // Fetch and print Actor results from the run's dataset (if any)
-  posts.postData.forEach((item: any) => {
+  console.log('Results from dataset');
+  const { items } = await client.dataset(run.defaultDatasetId).listItems();
+  items.forEach((item) => {
       console.dir(item);
-      console.log("\n*****ID: ", item.id, "\n")
   });
-  logger.log("info", "Done!")
 })();

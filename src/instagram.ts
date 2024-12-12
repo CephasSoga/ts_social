@@ -1,7 +1,6 @@
 import {z, ZodError } from "zod";
 import { ApifyClient, ActorRun } from 'apify-client';
 import Config from './config';
-import log from './logging';
 import Logger from "./logging";
 
 interface Header {
@@ -305,3 +304,5 @@ class InstagramApifyWrapper {
 }
 
 export default InstagramApifyWrapper;
+
+/**TODO: Scrape for all channels */
