@@ -2,10 +2,16 @@
 
 import fs from 'fs';
 import TOML from 'toml';
-import { string } from 'zod';
 
 /** Interface defining the structure of the configuration items.*/
 interface ConfigItems {
+    database: {
+    uri: string,
+    name: string,
+    database_name: string,
+    collection_name: string,
+  },
+
   logging: {
     level: string,
     dir: string,
@@ -26,6 +32,7 @@ interface ConfigItems {
   };
   redditActorConfig: {
     startUrls: string[];
+    subreddits: string[];
     skipComments: boolean;
     skipUserPosts: boolean;
     skipCommunity: boolean;
@@ -50,6 +57,8 @@ interface ConfigItems {
     searchType: string,
     searchLimit: number,
     addParentData: boolean,
+    sort: string,
+    maxItems: number
   };
   twitterActorConfig: {
     baseUrl: string,
@@ -73,6 +82,10 @@ interface ConfigItems {
     start: string
     end: string
     customMapFunction: string
+  };
+  control: {
+    timeRangeSecs: number
+    sleepMs: number
   }
 }
 

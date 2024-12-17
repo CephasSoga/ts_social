@@ -2,6 +2,7 @@ import {z, ZodError } from "zod";
 import { ApifyClient, ActorRun } from 'apify-client';
 import Config from './config';
 import Logger from "./logging";
+import { now, secsBackward } from "./utils";
 
 interface Header {
     url: string,
@@ -139,6 +140,17 @@ export { InstagramPostSchema, CommentSchema, MusicInfoSchema };
 type Unexpected = Record<string ,any|unknown>;
 type InstagramActorOutput = Array<InstagramPost | Header | Unexpected>;
 
+interface InstagramActorResultForChannel {
+    output: InstagramActorOutput,
+    channel: string,
+}
+
+interface InstagramActorResult {
+    hashKey: string,
+    results: Array<InstagramActorResultForChannel>
+    from: Date,
+    to: Date
+}
 
 class InstagramScrapingError extends Error {
     public channel?;
@@ -193,63 +205,31 @@ class InstagramApifyWrapper {
         );
     }
 
-    async scrapeInstagramChannel(
-        channel: string,
-        resultsLimit: number|null = null,
-        searchLimit: number|null = null,
-
-    ): Promise<InstagramActorOutput> {
+    async scrapeInstagramChannel(channel: string,): Promise<InstagramActorOutput> {
+        
         // Prepare Actor input
-        resultsLimit = resultsLimit || this.config.items.instagramActorConfig.resultsLimit;
-        if (!resultsLimit) {
-            throw new InstagramScrapingError(
-                "No `resultsLimit` argument was provided." + 
-                "You can set it either in `config.toml` or pass it as an argument to the `scrapeInstagram` method",
-                channel,
-                {
-                    resultsLimit: resultsLimit? resultsLimit: null,
-                    searchLimit: searchLimit? searchLimit: null,
-                }
-            );
-        }
-
-        searchLimit = searchLimit || this.config.items.instagramActorConfig.searchLimit;
-        if (!searchLimit) {
-            throw new InstagramScrapingError(
-                "No `searchLimit` argument was provided." + 
-                "You can set it either in `config.toml` or pass it as an argument to the `scrapeInstagram` method",
-                channel,
-                {
-                    resultsLimit: resultsLimit? resultsLimit: null,
-                    searchLimit: searchLimit? searchLimit: null,
-                }
-            );
-        }
-
-        // Prepare Actor input
+        this.logger.log("info", "Building inputs...");
         const input = {
             "directUrls": [
                 `${this.config.items.instagramActorConfig.baseUrl}/${channel}/`
             ],
             "resultsType": this.config.items.instagramActorConfig.resultsType,
-            "resultsLimit": resultsLimit,
+            "resultsLimit": this.config.items.instagramActorConfig.resultsLimit,
             "searchType": this.config.items.instagramActorConfig.searchType,
-            "searchLimit": searchLimit,
+            "searchLimit": this.config.items.instagramActorConfig.searchLimit,
             "addParentData": this.config.items.instagramActorConfig.addParentData
         };
 
+        this.logger.log("info", "Requesting data...");
         try {
             // Run the Actor and wait for it to finish
             const run: ActorRun = await this.client.actor(this.config.items.apifyConfig.instagramActorId).call(input);
-        
-            // Fetch and print Actor results from the run's dataset (if any)
-            console.log('Results from dataset');
             const { items } = await this.client.dataset(run.defaultDatasetId).listItems();
             
             // Log and parse each item
             const parsedItems: InstagramActorOutput = [];
             for (const item of items) {
-                console.dir(item);
+                //console.dir(item);
                 const parsedItem = await this.parseItem(item); // Use parseItem to handle the item
                 parsedItems.push(parsedItem);
             }
@@ -300,9 +280,116 @@ class InstagramApifyWrapper {
     
         // If both schemas fail, return the item as Unexpected
         return item as Unexpected;
-    }    
+    }
+    
+    async scrape(
+        channels: Array<string>,
+        from: Date,
+        to: Date,
+        sort?: string,
+        maxItems?: number,
+    ): Promise<InstagramActorResult> {
+        const results: Array<InstagramActorResultForChannel> = [];
+    
+        for (const channel of channels) {
+            try {
+                this.logger.log("info", `Scraping channel: ${channel}`);
+                const output = await this.scrapeInstagramChannel(channel);
+
+                // Apply timestamp filtering
+                const filteredOutput = this.filterByTimestamp(output, from, to);
+
+                results.push({
+                    channel,
+                    output: filteredOutput,
+                });
+
+            } catch (error: any) {
+                this.logger.log(
+                    "error",
+                    `Failed to scrape channel: ${channel}`,
+                    error instanceof InstagramScrapingError ? error : new InstagramScrapingError(error.message, channel)
+                );
+            }
+        }
+    
+        // Apply sorting if specified
+        if (sort) {
+            this.logger.log("info", `Sorting results by: ${sort}`);
+            const validSortFields = ["likesCount", "commentsCount", "timestamp"];
+            if (!validSortFields.includes(sort)) {
+                throw new Error(`Invalid sort field: ${sort}. Allowed fields are ${validSortFields.join(", ")}`);
+            }
+    
+            results.forEach((result) => {
+                result.output.sort((a, b) => {
+                    if (sort in a && sort in b) {
+                        return (b as any)[sort] - (a as any)[sort]; // Descending order
+                    }
+                    return 0; // Keep the order if the field is missing
+                });
+            });
+        }
+    
+        // Truncate the total number of items if maxItems is set
+        if (maxItems) {
+            let totalItems = 0;
+            for (const result of results) {
+                totalItems += result.output.length;
+                if (totalItems > maxItems) {
+                    const excess = totalItems - maxItems;
+                    result.output = result.output.slice(0, result.output.length - excess);
+                    break;
+                }
+            }
+        }
+    
+        this.logger.log("info", "Scraping completed.");
+        return {
+            hashKey: this.generateHashKey(channels, sort ? sort : null, maxItems ?  maxItems : null),
+            results,
+            from,
+            to,
+        };
+    }
+    
+    private filterByTimestamp(output: InstagramActorOutput, from: Date, to: Date): InstagramActorOutput {
+        return output.filter((item: InstagramPost | Header | Unexpected) => {
+            if ((item as InstagramPost).timestamp) {
+                const timestamp = new Date((item as InstagramPost).timestamp);
+                return timestamp >= from && timestamp <= to;
+            }
+            return false;
+        });
+    }
+
+    /**
+     * Helper function to generate a unique hash key for the scrape operation
+     */
+    private generateHashKey(channels: Array<string>, sort: string | null, maxItems: number | null): string {
+        const baseString = JSON.stringify({ channels, sort, maxItems });
+        return require('crypto').createHash('md5').update(baseString).digest('hex');
+    }
+
+
+    async collect(): Promise<InstagramActorResult> {
+        this.logger.log("info", "Instagram Actor is started...");
+
+        const channels = this.config.items.instagramActorConfig.targetChannels;
+
+        const sortValue = this.config.items.instagramActorConfig.sort;
+        const sort = sortValue ? sortValue : undefined;
+
+        const maxItemsValue = this.config.items.instagramActorConfig.maxItems;
+        const maxItems = maxItemsValue ? maxItemsValue : undefined;
+
+        const from = secsBackward(this.config.items.control.timeRangeSecs);
+        const to = now();
+
+        const result = this.scrape(channels, from, to, sort, maxItems);
+
+        return result;
+    }
 }
 
 export default InstagramApifyWrapper;
-
-/**TODO: Scrape for all channels */

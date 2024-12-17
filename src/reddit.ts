@@ -2,6 +2,8 @@ import {z, ZodError } from "zod";
 import { ApifyClient, ActorRun } from 'apify-client';
 import Config from './config';
 import Logger from './logging';
+import { now } from "./utils";
+import { secsBackward } from "./utils";
 
 /**
  * RedditScrapingError class.
@@ -192,6 +194,18 @@ interface RedditActorOutput {
     postData: PostData[] | Unexpected;
 }
 
+interface RedditActorResultForSubreddit {
+    subreddit: string,
+    output: RedditActorOutput | null,
+}
+
+interface RedditActorResult {
+    hashKey: string,
+    results: Array<RedditActorResultForSubreddit> | null,
+    from: Date,
+    to: Date,
+}
+
 /**
  * RedditApifyWrapper class.
  * This class facilitates scraping data from Reddit using the Apify platform.
@@ -221,42 +235,18 @@ class RedditApifyWrapper {
     /**
      * Scrapes data from a specified subreddit.
      * @param subreddit - The name of the subreddit to scrape (e.g., "news").
-     * @param sort - Optional sorting method (e.g., "hot", "new"). Defaults to the configured sort method.
-     * @param maxItems - Optional limit on the maximum number of items to scrape. Defaults to the configured maximum.
      * @returns A promise that resolves to an object containing community data and post data.
      * @throws RedditScrapingError if the scraping process fails.
      */
     async scrapeSubreddit(
         subreddit: string,
-        sort: string | null = null,
-        maxItems: number | null = null
     ): Promise<RedditActorOutput> {
-
-        sort = sort || this.config.items.redditActorConfig.sort;
-        if (!sort) {
-            throw new RedditScrapingError(
-                "No `sort` argument was provided." + 
-                "You can set it either in `config.toml` or pass it as an argument to the `scrapeSubreddit` method",
-                subreddit,
-                {sort: sort? sort: null, maxItems: maxItems? maxItems: null, config:this.config.getItems()}
-            ); 
-        }
-
-        maxItems = maxItems || this.config.items.redditActorConfig.maxItems;
-        if (!maxItems){
-            throw new RedditScrapingError(
-                "No `resultsLimit` argument was provided." + 
-                "You can set it either in `config.toml` or pass it as an argument to the `scrapeInstagram` method",
-                subreddit,
-                {sort: sort? sort: null, maxItems: maxItems? maxItems: null, config:this.config.getItems()}
-            );
-        }
     
         this.logger.log("info", "Building inputs...");
         const input = {
             startUrls: [{ url: `https://www.reddit.com/r/${subreddit}/` }],
-            sort,
-            maxItems,
+            sort: this.config.items.redditActorConfig.sort,
+            maxItems: this.config.items.redditActorConfig.maxItems,
             proxy: {
                 useApifyProxy: this.config.items.proxyConfig.useApifyProxy,
                 apifyProxyGroups: this.config.items.proxyConfig.apifyProxyGroups,
@@ -316,12 +306,124 @@ class RedditApifyWrapper {
             throw new RedditScrapingError(
                 "Reddit scraping failed",
                 subreddit,
-                {sort: sort? sort: null, maxItems: maxItems? maxItems: null, config: this.config.getItems()}
+                {config: this.config.getItems()}
             );
         }
     }
-}
 
+    async scrape(
+        subreddits: Array<string>, 
+        from: Date,
+        to: Date,
+    ): Promise<RedditActorResult> {
+        this.logger.log("info", "Starting scrape for multiple subreddits...");
+        const results: RedditActorResultForSubreddit[] = [];
+    
+        // Iterate through the subreddits array and scrape each one
+        for (const subreddit of subreddits) {
+            try {
+                this.logger.log("info", `Scraping subreddit: ${subreddit}`);
+                const data = await this.scrapeSubreddit(subreddit);
+
+                // Filter post data by timestamp
+                const filteredData = this.filterRedditActorOutputByTimestamp(data, from, to);
+
+                results.push({subreddit: subreddit, output: filteredData});
+
+
+                this.logger.log("info", `Successfully scraped subreddit: ${subreddit}`);
+            } catch (error: any) {
+                this.logger.log("error", `Failed to scrape subreddit: ${subreddit}`, error);
+                results.push({subreddit: subreddit, output: null})
+            }
+        }    
+
+        this.logger.log("info", "Finished scraping all subreddits.");
+        return {
+            hashKey: this.generateHashKey(subreddits, 
+                this.config.items.redditActorConfig.sort,
+                this.config.items.redditActorConfig.maxItems
+            ),
+            results: results,
+            from,
+            to,
+        };
+    }
+
+    /**
+     * Helper function to generate a unique hash key for the scrape operation
+     */
+    private generateHashKey(subreddits: Array<string>, sort: string | null, maxItems: number | null): string {
+        const baseString = JSON.stringify({ subreddits, sort, maxItems });
+        return require('crypto').createHash('md5').update(baseString).digest('hex');
+    }
+
+
+    /**
+     * Filters an array of `PostData` or `Unexpected` objects by a timestamp range.
+     * @param data - Array of `PostData` or `Unexpected` objects containing a `createdAt` or `scrapedAt` timestamp.
+     * @param from - Start date (inclusive) for the filtering.
+     * @param to - End date (inclusive) for the filtering.
+     * @returns An array of `PostData` objects that fall within the specified range.
+     */
+    private filterByTimestamp(
+        data: Array<PostData | Unexpected>,
+        from: Date,
+        to: Date
+    ): Array<PostData> {
+        return data.filter(item => {
+            if ('createdAt' in item || 'scrapedAt' in item) {
+                const createdAt = item.createdAt ? new Date(item.createdAt) : null;
+                const scrapedAt = item.scrapedAt ? new Date(item.scrapedAt) : null;
+    
+                return (
+                    (createdAt && createdAt >= from && createdAt <= to) ||
+                    (scrapedAt && scrapedAt >= from && scrapedAt <= to)
+                );
+            }
+            return false; // Exclude unexpected objects
+        }) as Array<PostData>;
+    }
+    
+    /**
+     * Filters the `RedditActorOutput` by timestamp for both `communityData` and `postData`.
+     * @param output - The `RedditActorOutput` object containing community and post data.
+     * @param from - Start date (inclusive) for the filtering.
+     * @param to - End date (inclusive) for the filtering.
+     * @returns A new `RedditActorOutput` with filtered data.
+     */
+    private filterRedditActorOutputByTimestamp(
+        output: RedditActorOutput,
+        from: Date,
+        to: Date
+    ): RedditActorOutput {
+        // Filter communityData if it's not an Unexpected type
+        const communityData = 'createdAt' in output.communityData || 'scrapedAt' in output.communityData
+            ? this.filterByTimestamp([output.communityData], from, to)[0] || output.communityData
+            : output.communityData;
+    
+        // Filter postData if it's an array of PostData
+        const postData = Array.isArray(output.postData)
+            ? this.filterByTimestamp(output.postData, from, to)
+            : output.postData;
+    
+        return { communityData, postData };
+    }
+
+    async collect(): Promise<RedditActorResult> {
+        this.logger.log("info", "Instagram Actor is started...");
+
+        const subreddits = this.config.items.redditActorConfig.subreddits;
+
+        const from = secsBackward(this.config.items.control.timeRangeSecs);
+        const to = now();
+
+        const result = this.scrape(subreddits, from, to);
+
+        return result;
+    }
+    
+}
 export default RedditApifyWrapper;
 
 

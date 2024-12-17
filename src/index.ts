@@ -1,34 +1,45 @@
-import { ApifyClient } from 'apify-client';
-import Config from './config';
+import InstagramApifyWrapper from "./instagram";
+import RedditApifyWrapper from "./reddit";
+import { ClientManager, DatabaseOps } from "./db";
+import Config from "./config";
+import { sleep } from "./utils";
 
-const config = new Config('./config.toml')
 
-// Initialize the ApifyClient with API token
-const client = new ApifyClient({
-    token: config.items.apifyConfig.token,
-});
-
-// Prepare Actor input
-const input = {
-  "keyword": "elonmusk",
-  "maximum": 2,
-  "retry": 2,
-  "proxy": {
-      "useApifyProxy": true,
-      "apifyProxyGroups": [
-          "RESIDENTIAL"
-      ]
+async function run(instagram: InstagramApifyWrapper, reddit: RedditApifyWrapper, ops: DatabaseOps): Promise<void> {
+    try {
+        const instagramResult = await instagram.collect();
+        const redditResult = await reddit.collect();
+        await ops.insertMany([instagramResult, redditResult]);
+    } catch (error) {
+        throw error;
   }
-};
+}
 
-(async () => {
-  // Run the Actor and wait for it to finish
-  const run = await client.actor("DDe3hNSgaR7I1wkOc").call(input);
+async function main(): Promise<void> {
+    console.log("Reading configuration file...")
+    const configPath = "./config.toml";
+    const config = new Config(configPath);
 
-  // Fetch and print Actor results from the run's dataset (if any)
-  console.log('Results from dataset');
-  const { items } = await client.dataset(run.defaultDatasetId).listItems();
-  items.forEach((item) => {
-      console.dir(item);
-  });
-})();
+    console.log("Building database client...");
+    const clientManager = await ClientManager.new(config);
+
+    console.log("Building database operations manager...")
+    const ops = new DatabaseOps(
+      clientManager.client,
+      config.items.database.database_name,
+      config.items.database.collection_name,
+    );
+    
+    console.log("Scraping...");
+
+    const instagram = new InstagramApifyWrapper(config);
+
+    const reddit = new RedditApifyWrapper(config);
+
+    while (true) {
+        await run(instagram, reddit, ops);
+        await sleep(config.items.control.sleepMs);
+    }
+}
+
+(async() => ( await main()))();
