@@ -1,15 +1,17 @@
 import InstagramApifyWrapper from "./instagram";
 import RedditApifyWrapper from "./reddit";
+import TwitterActorWrapper from "./twitter";
 import { ClientManager, DatabaseOps } from "./db";
 import Config from "./config";
 import { sleep } from "./utils";
 
 
-async function run(instagram: InstagramApifyWrapper, reddit: RedditApifyWrapper, ops: DatabaseOps): Promise<void> {
+async function run(instagram: InstagramApifyWrapper, reddit: RedditApifyWrapper, twitter: TwitterActorWrapper, ops: DatabaseOps): Promise<void> {
     try {
         const instagramResult = await instagram.collect();
         const redditResult = await reddit.collect();
-        await ops.insertMany([instagramResult, redditResult]);
+        const twitterResult = await twitter.collect();
+        await ops.insertMany([instagramResult, redditResult, twitterResult]);
     } catch (error) {
         throw error;
   }
@@ -36,8 +38,10 @@ async function main(): Promise<void> {
 
     const reddit = new RedditApifyWrapper(config);
 
+    const twitter = new TwitterActorWrapper(config);
+
     while (true) {
-        await run(instagram, reddit, ops);
+        await run(instagram, reddit, twitter, ops);
         await sleep(config.items.control.sleepMs);
     }
 }
