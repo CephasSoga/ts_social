@@ -1,6 +1,6 @@
 import { MongoClient, Collection, Document, Db, UpdateResult } from "mongodb";
 import  Config  from "./config";
-import Logger  from "./logging";
+import { info, debug, error, warn}  from "./logging";
 import { Error } from "mongoose";
 
 /** Define custom error types. */
@@ -38,7 +38,7 @@ class ClientManager {
 
             /** Attempt to connect to MongoDB. */
             await client.connect();
-            console.log("Connected successfully to MongoDB cluster!");
+            info("Connected successfully to MongoDB cluster!");
 
             return new ClientManager(client);
         } catch (e: any) {
@@ -55,21 +55,19 @@ class ClientManager {
 /** Handles Database Operations. */
 class DatabaseOps {
     private collection: Collection<Document>;
-    private logger: Logger;
 
     constructor(client: MongoClient, database: string, collection: string) {
         const db: Db = client.db(database);
         this.collection = db.collection(collection);
-        this.logger = new Logger();
     }
 
     /** Inserts a single document into the collection. */
     async insertOne(doc: Document): Promise<void> {
         try {
-            this.logger.log("info", `Successfully <inserted> 1 doc into ${this.collection}`);
+            info(`Successfully <inserted> 1 doc into ${this.collection}`);
             await this.collection.insertOne(doc);
         } catch (e: any) {
-            this.logger.log("error", `Failed to <insert> 1 doc into ${this.collection}`);
+            error(`Failed to <insert> 1 doc into ${this.collection}` + " | Error: ", e);
             throw new MongoDbError(OpError.InsertionError, `Failed to insert document: ${e.message}`);
         }
     }
@@ -77,10 +75,10 @@ class DatabaseOps {
     /** Inserts multiple documents into the collection. */
     async insertMany(docs: Document[]): Promise<void> {
         try {
-            this.logger.log("info", `Successfully <inserted> ${docs.length} doc(s) into ${this.collection}`);
+            info(`Successfully <inserted> ${docs.length} doc(s) into ${this.collection}`);
             await this.collection.insertMany(docs);
         } catch (e: any) {
-            this.logger.log("error", `Failed to <insert> ${docs.length} doc into ${this.collection}`);
+            error(`Failed to <insert> ${docs.length} doc into ${this.collection}` + " | Error: ", e);
             throw new MongoDbError(OpError.InsertionError, `Failed to <insert> documents: ${e.message}`);
         }
     }
@@ -91,12 +89,12 @@ class DatabaseOps {
             const updateDoc = { $set: update };
             const result: UpdateResult = await this.collection.updateMany(filter, updateDoc);
             if (result.matchedCount === 0) {
-                this.logger.log("warn", `No result matched <update> filter inside ${this.collection}`);
+                warn(`No result matched <update> filter inside ${this.collection}`);
                 throw new MongoDbError(OpError.UpdateError, "No documents matched the filter.");
             }
-            this.logger.log("info", `Successfully <updated> ${result.modifiedCount} doc(s) inside ${this.collection}`);
+            info(`Successfully <updated> ${result.modifiedCount} doc(s) inside ${this.collection}`);
         } catch (e: any) {
-            this.logger.log("error", `Failed to <update> docs inside ${this.collection}`);
+            error(`Failed to <update> docs inside ${this.collection}` + " | Error: ", e);
             throw new MongoDbError(OpError.UpdateError, `Failed to update documents: ${e.message}`);
         }
     }
@@ -106,12 +104,12 @@ class DatabaseOps {
         try {
             const result = await this.collection.deleteMany(filter);
             if (result.deletedCount === 0) {
-                this.logger.log("warn", `No result matched <delete> filter inside ${this.collection}`);
+                warn(`No result matched <delete> filter inside ${this.collection}`);
                 throw new MongoDbError(OpError.DeletionError, "No documents were deleted.");
             }
-            this.logger.log("info", `Successfully <deleted> ${result.deletedCount} doc(s) inside ${this.collection}`);
+            info(`Successfully <deleted> ${result.deletedCount} doc(s) inside ${this.collection}`);
         } catch (e: any) {
-            this.logger.log("error", `Failed to <delete> docs inside ${this.collection}`);
+            error(`Failed to <delete> docs inside ${this.collection}` + " | Error: ", e);
             throw new MongoDbError(OpError.DeletionError, `Failed to delete documents: ${e.message}`);
         }
     }
@@ -121,10 +119,10 @@ class DatabaseOps {
         try {
             const cursor = await this.collection.find(filter);
             const results: Document[] = await cursor.toArray();
-            this.logger.log("info", `Found ${results.length} matching <search> filter inside ${this.collection}`);
+            info(`Found ${results.length} matching <search> filter inside ${this.collection}`);
         return results;
         } catch (e: any) {
-            this.logger.log("error", `Failed to <search> docs inside ${this.collection}`);
+            error(`Failed to <search> docs inside ${this.collection}` + " | Error: ", e);
             throw new MongoDbError(OpError.SearchError, `Failed to search documents: ${e.message}`);
         }
     }

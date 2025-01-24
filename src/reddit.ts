@@ -1,7 +1,7 @@
 import {z, ZodError } from "zod";
 import { ApifyClient, ActorRun } from 'apify-client';
 import Config from './config';
-import Logger from './logging';
+import { info, debug, error, warn } from './logging';
 import { now } from "./utils";
 import { secsBackward } from "./utils";
 
@@ -215,7 +215,6 @@ interface RedditActorResult {
 class RedditApifyWrapper {
     private client: ApifyClient;
     private config: Config;
-    private logger;
 
     /**
      * Creates an instance of RedditApifyWrapper.
@@ -226,10 +225,6 @@ class RedditApifyWrapper {
             token: config.items.apifyConfig.token
         });
         this.config = config;
-        this.logger = new Logger(
-            `${this.config.items.logging.dir}/${this.config.items.logging.redditActorLogFile}`,
-            this.config.items.logging.level
-        );
     }
 
     /**
@@ -242,7 +237,7 @@ class RedditApifyWrapper {
         subreddit: string,
     ): Promise<RedditActorOutput> {
     
-        this.logger.log("info", "Building inputs...");
+        info("Building inputs...");
         const input = {
             startUrls: [{ url: `https://www.reddit.com/r/${subreddit}/` }],
             sort: this.config.items.redditActorConfig.sort,
@@ -253,7 +248,7 @@ class RedditApifyWrapper {
             },
         };
     
-        this.logger.log("info", "Requesting data...");
+       info("Requesting data...");
         try {
             const run: ActorRun = await this.client.actor(this.config.items.apifyConfig.redditActorId).call(input);
             const { items } = await this.client.dataset(run.defaultDatasetId).listItems();
@@ -269,15 +264,14 @@ class RedditApifyWrapper {
                 );
             }
     
-            this.logger.log("info", "Parsing outputs...");
+            info("Parsing outputs...");
             // Validate and parse the first item as CommunityData
             const communityDataResult = CommunityDataSchema.safeParse(items[0]);
             const communityData = communityDataResult.success
                 ? communityDataResult.data
-                : (this.logger.log(
-                      "warn",
+                : (warn(
                       "Community data validation failed. Falling back to raw data.",
-                      { issues: communityDataResult.error.errors }
+                      JSON.stringify({ issues: communityDataResult.error.errors })
                   ),
                   items[0] as Unexpected); // Fallback to raw data.
     
@@ -289,10 +283,10 @@ class RedditApifyWrapper {
                         if (result.success) {
                             return result.data;
                         } else {
-                            this.logger.log("warn", "Post data validation failed.", {
+                            warn("Post data validation failed.", JSON.stringify({
                                 issues: result.error.errors,
                                 item,
-                            });
+                            }));
                             return item; // Fallback to raw data
                         }
                     } catch (error: any) {
@@ -301,8 +295,8 @@ class RedditApifyWrapper {
                 })
             );
             return { communityData, postData };
-        } catch (error) {
-            this.logger.log("error", "Failed to scrape subreddit.", error);
+        } catch (error: any) {
+            error("Failed to scrape subreddit.", error);
             throw new RedditScrapingError(
                 "Reddit scraping failed",
                 subreddit,
@@ -316,13 +310,13 @@ class RedditApifyWrapper {
         from: Date,
         to: Date,
     ): Promise<RedditActorResult> {
-        this.logger.log("info", "Starting scrape for multiple subreddits...");
+        info("Starting scrape for multiple subreddits...");
         const results: RedditActorResultForSubreddit[] = [];
     
         // Iterate through the subreddits array and scrape each one
         for (const subreddit of subreddits) {
             try {
-                this.logger.log("info", `Scraping subreddit: ${subreddit}`);
+                info(`Scraping subreddit: ${subreddit}`);
                 const data = await this.scrapeSubreddit(subreddit);
 
                 // Filter post data by timestamp
@@ -331,14 +325,14 @@ class RedditApifyWrapper {
                 results.push({subreddit: subreddit, output: filteredData});
 
 
-                this.logger.log("info", `Successfully scraped subreddit: ${subreddit}`);
+                info(`Successfully scraped subreddit: ${subreddit}`);
             } catch (error: any) {
-                this.logger.log("error", `Failed to scrape subreddit: ${subreddit}`, error);
+                error(`Failed to scrape subreddit: ${subreddit}`, error);
                 results.push({subreddit: subreddit, output: null})
             }
         }    
 
-        this.logger.log("info", "Finished scraping all subreddits.");
+        info("Finished scraping all subreddits.");
         return {
             hashKey: this.generateHashKey(subreddits, 
                 this.config.items.redditActorConfig.sort,
@@ -411,7 +405,7 @@ class RedditApifyWrapper {
     }
 
     async collect(): Promise<RedditActorResult> {
-        this.logger.log("info", "Instagram Actor is started...");
+        info("Instagram Actor is started...");
 
         const subreddits = this.config.items.redditActorConfig.subreddits;
 

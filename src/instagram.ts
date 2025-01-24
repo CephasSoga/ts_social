@@ -1,7 +1,7 @@
 import {z, ZodError } from "zod";
 import { ApifyClient, ActorRun } from 'apify-client';
 import Config from './config';
-import Logger from "./logging";
+import { info, warn, error, debug } from "./logging";
 import { now, secsBackward } from "./utils";
 
 interface Header {
@@ -192,23 +192,18 @@ class DataFormatError extends Error {
 class InstagramApifyWrapper {
     private client: ApifyClient;
     private config: Config;
-    private logger: Logger;
 
     constructor(config: Config) {
         this.client = new ApifyClient({
             token: config.items.apifyConfig.token
         });
         this.config = config
-        this.logger = new Logger(
-            `${this.config.items.logging.dir}/${this.config.items.logging.instagramActorLogFile}`,
-            this.config.items.logging.level
-        );
     }
 
     async scrapeInstagramChannel(channel: string,): Promise<InstagramActorOutput> {
         
         // Prepare Actor input
-        this.logger.log("info", "Building inputs...");
+        info("Building inputs...");
         const input = {
             "directUrls": [
                 `${this.config.items.instagramActorConfig.baseUrl}/${channel}/`
@@ -220,7 +215,7 @@ class InstagramApifyWrapper {
             "addParentData": this.config.items.instagramActorConfig.addParentData
         };
 
-        this.logger.log("info", "Requesting data...");
+        info("Requesting data...");
         try {
             // Run the Actor and wait for it to finish
             const run: ActorRun = await this.client.actor(this.config.items.apifyConfig.instagramActorId).call(input);
@@ -236,16 +231,15 @@ class InstagramApifyWrapper {
         
             // Check if parsedItems contains valid results or fallback to Unexpected
             if (parsedItems.length === 0) {
-                this.logger.log(
-                    "warn",
+                warn(
                     "No valid data found in the dataset. Fallback structure will be used...",
-                    new DataFormatError(
+                    JSON.stringify(new DataFormatError(
                         "Unexpected dataset structure.",
                         { expectedType: "Array<InstagramPost | Header>" },
                         { receivedType: typeof items },
                         { invalidFields: Object.keys(items) },
                         "Parsing items failed to match expected schema.",
-                        { issues: null }
+                        { issues: null })
                     )
                 );
                 return items as Unexpected[]; // Return the raw data as a fallback
@@ -253,14 +247,14 @@ class InstagramApifyWrapper {
         
             // Return the successfully parsed data
             return parsedItems;
-        } catch (error) {
+        } catch (error: any) {
             const actorError = new InstagramScrapingError(
                 `Actor failed to scrape channel <${channel}>`,
                 channel,
                 { params: this.config.getItems() }
             );
         
-            this.logger.log("error", "Scraping failed!", actorError);
+            error("Scraping failed!", actorError);
             throw actorError;
         }
     }  
@@ -293,7 +287,7 @@ class InstagramApifyWrapper {
     
         for (const channel of channels) {
             try {
-                this.logger.log("info", `Scraping channel: ${channel}`);
+                info(`Scraping channel: ${channel}`);
                 const output = await this.scrapeInstagramChannel(channel);
 
                 // Apply timestamp filtering
@@ -305,8 +299,7 @@ class InstagramApifyWrapper {
                 });
 
             } catch (error: any) {
-                this.logger.log(
-                    "error",
+                error(
                     `Failed to scrape channel: ${channel}`,
                     error instanceof InstagramScrapingError ? error : new InstagramScrapingError(error.message, channel)
                 );
@@ -315,7 +308,7 @@ class InstagramApifyWrapper {
     
         // Apply sorting if specified
         if (sort) {
-            this.logger.log("info", `Sorting results by: ${sort}`);
+            info(`Sorting results by: ${sort}`);
             const validSortFields = ["likesCount", "commentsCount", "timestamp"];
             if (!validSortFields.includes(sort)) {
                 throw new Error(`Invalid sort field: ${sort}. Allowed fields are ${validSortFields.join(", ")}`);
@@ -344,7 +337,7 @@ class InstagramApifyWrapper {
             }
         }
     
-        this.logger.log("info", "Scraping completed.");
+        info("Scraping completed.");
         return {
             hashKey: this.generateHashKey(channels, sort ? sort : null, maxItems ?  maxItems : null),
             results,
@@ -373,7 +366,7 @@ class InstagramApifyWrapper {
 
 
     async collect(): Promise<InstagramActorResult> {
-        this.logger.log("info", "Instagram Actor is started...");
+        info("Instagram Actor is started...");
 
         const channels = this.config.items.instagramActorConfig.targetChannels;
 

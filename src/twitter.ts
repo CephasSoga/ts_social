@@ -1,6 +1,6 @@
 import { ApifyClient } from 'apify-client';
 import Config from './config';
-import Logger from './logging';
+import {info, debug, error, warn} from './logging';
 import { config } from 'winston';
 import { now } from "./utils";
 import { secsBackward } from "./utils";
@@ -17,23 +17,18 @@ interface TwitterActorResult {
 class TwitterActorWrapper{
     private client: ApifyClient;
     private config: Config;
-    private logger: Logger;
 
     constructor(config: Config){
         this.client = new ApifyClient({
             token: config.items.apifyConfig.token
         });
         this.config = config
-        this.logger = new Logger(
-            `${this.config.items.logging.dir}/${this.config.items.logging.twitterActorLogFile}`,
-            this.config.items.logging.level
-        );
     }
 
     async ScrapeTwitterChannel(channel: string): Promise<TwitterActorOutput> {
-        this.logger.log("info", `Scrapin channel [${channel}]...`);
+        info(`Scrapin channel [${channel}]...`);
         // Prepare inputs
-        this.logger.log("info", "Building inputs...");
+        info("Building inputs...");
         const input = {
             "startUrls": [
                 `https://twitter.com/${channel}/`
@@ -60,14 +55,14 @@ class TwitterActorWrapper{
         };
 
         // Run the Actor and wait for it to finish
-        this.logger.log("info", "Requesting data...")
+        info("Requesting data...")
         const run = await this.client.actor(this.config.items.apifyConfig.twitterActorId).call(input);
 
         // Fetch and print Actor results from the run's dataset (if any)
-        console.log('Results from dataset');
+        debug('Results from dataset: ');
         const { items } = await this.client.dataset(run.defaultDatasetId).listItems();
         items.forEach((item) => {
-            console.dir(item);
+            debug("- " + item);
         });
 
         return {items};
@@ -78,7 +73,7 @@ class TwitterActorWrapper{
         from: Date,
         to: Date
     ): Promise<TwitterActorResult> {
-        this.logger.log("info", "Starting scrape for multiple channels...");
+        info("Starting scrape for multiple channels...");
 
         // Iterate over channels ans scrape each one
         // then aggregate result in Twitter result interface
@@ -86,7 +81,7 @@ class TwitterActorWrapper{
 
         for (const channel of channels) {
             try {
-                this.logger.log("info", `Scraping channel: ${channel}`);
+                info(`Scraping channel: ${channel}`);
                 
                 // Update the config with the given date range
                 this.config.items.twitterActorConfig.start = from.toISOString();
@@ -96,9 +91,9 @@ class TwitterActorWrapper{
                 const output = await this.ScrapeTwitterChannel(channel);
                 outputs.push(output);
 
-                this.logger.log("info", `Successfully scraped channel: ${channel}`);
+                info(`Successfully scraped channel: ${channel}`);
             } catch (error: any) {
-                this.logger.log("error", `Failed to scrape channel: ${channel}.`, error);
+                error(`Failed to scrape channel: ${channel}.`, error);
             }
         }
 
@@ -113,7 +108,7 @@ class TwitterActorWrapper{
             outputs,
         };
 
-        this.logger.log("info", `Scraping complete. Generated hash: ${hash}`);
+        info(`Scraping complete. Generated hash: ${hash}`);
         return result;
 
     }
@@ -127,7 +122,7 @@ class TwitterActorWrapper{
     }
 
     async collect(): Promise<TwitterActorResult> {
-        this.logger.log("info", "Twitter Actor is starting...");
+        info("Twitter Actor is starting...");
     
         // Retrieve Twitter channels from configuration
         const channels = this.config.items.twitterActorConfig.targetChannels;
@@ -139,7 +134,7 @@ class TwitterActorWrapper{
         // Perform the scraping
         const result = await this.scrape(channels, from, to);
     
-        this.logger.log("info", "Twitter Actor has completed scraping.");
+        info("Twitter Actor has completed scraping.");
         return result;
     }
 }
