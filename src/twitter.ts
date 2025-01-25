@@ -2,7 +2,8 @@ import { ApifyClient } from 'apify-client';
 import Config from './config';
 import {info, debug, error, warn} from './logging';
 import { config } from 'winston';
-import { now } from "./utils";
+import { FetchType } from './options';
+import { now, toDate } from "./utils";
 import { secsBackward } from "./utils";
 
 type TwitterActorOutput = Record<any, any>;
@@ -12,6 +13,13 @@ interface TwitterActorResult {
     from: Date,
     to: Date,
     outputs: TwitterActorOutput[],
+}
+
+interface Input{
+    fetch_type: string,
+    channels: string[],
+    from: string,
+    to: string,
 }
 
 class TwitterActorWrapper{
@@ -76,7 +84,7 @@ class TwitterActorWrapper{
         info("Starting scrape for multiple channels...");
 
         // Iterate over channels ans scrape each one
-        // then aggregate result in Twitter result interface
+        // then aggregate result in Twitter result interface.
         const outputs: TwitterActorOutput[] = [];
 
         for (const channel of channels) {
@@ -114,11 +122,25 @@ class TwitterActorWrapper{
     }
 
     /**
-     * Helper function to generate a unique hash key for the scrape operation
+     * Helper function to generate a unique hash key for the scrape operation.
      */
     private generateHashKey(channels: Array<string>, sort: string | null, maxItems: number | null): string {
         const baseString = JSON.stringify({ channels, sort, maxItems });
         return require('crypto').createHash('md5').update(baseString).digest('hex');
+    }
+
+    async poll(args: string): Promise<TwitterActorResult> {
+        const {fetch_type, channels, from, to}: Input = JSON.parse(args);
+        if (fetch_type && FetchType.fromString(fetch_type) === FetchType.Twitter) {
+            try {
+                return await this.scrape(channels, toDate(from), toDate(to));
+            } catch (error: any) {
+                error(`Failed to poll Twitter actor.`, error);
+                throw error;
+            }
+        } else {
+            throw new Error(`Unsupported fecth type: ${fetch_type}`);
+        }
     }
 
     async collect(): Promise<TwitterActorResult> {

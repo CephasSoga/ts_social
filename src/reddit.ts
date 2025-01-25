@@ -2,8 +2,9 @@ import {z, ZodError } from "zod";
 import { ApifyClient, ActorRun } from 'apify-client';
 import Config from './config';
 import { info, debug, error, warn } from './logging';
-import { now } from "./utils";
+import { now, toDate } from "./utils";
 import { secsBackward } from "./utils";
+import { FetchType } from "./options";
 
 /**
  * RedditScrapingError class.
@@ -206,6 +207,13 @@ interface RedditActorResult {
     to: Date,
 }
 
+interface Input {
+    fetch_type: string,
+    subreddits: Array<string>,
+    from: string,
+    to: string,
+}
+
 /**
  * RedditApifyWrapper class.
  * This class facilitates scraping data from Reddit using the Apify platform.
@@ -402,6 +410,21 @@ class RedditApifyWrapper {
             : output.postData;
     
         return { communityData, postData };
+    }
+
+    async poll( args: string): Promise<RedditActorResult> {
+        const { fetch_type, subreddits, from, to }: Input = JSON.parse(args);
+        if (fetch_type && FetchType.fromString(fetch_type) === FetchType.Reddit) {
+            try {
+                return await this.scrape(subreddits, toDate(from),  toDate(to))
+            } catch (error: any) {
+                error("Failed to poll for new data.", error);
+                throw error;
+            }
+        }
+        else {
+            throw new Error(`Unsupported fetch type: ${fetch_type}`);
+        }
     }
 
     async collect(): Promise<RedditActorResult> {

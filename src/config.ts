@@ -5,7 +5,12 @@ import TOML from 'toml';
 
 /** Interface defining the structure of the configuration items.*/
 interface ConfigItems {
-    database: {
+  websocket: {
+    protocol: string,
+    host: string,
+    port: number,
+  },
+  database: {
     uri: string,
     name: string,
     database_name: string,

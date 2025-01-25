@@ -38,7 +38,7 @@ class ClientManager {
 
             /** Attempt to connect to MongoDB. */
             await client.connect();
-            info("Connected successfully to MongoDB cluster!");
+        info("Connected successfully to MongoDB cluster!");
 
             return new ClientManager(client);
         } catch (e: any) {

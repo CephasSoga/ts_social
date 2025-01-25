@@ -2,7 +2,10 @@ import {z, ZodError } from "zod";
 import { ApifyClient, ActorRun } from 'apify-client';
 import Config from './config';
 import { info, warn, error, debug } from "./logging";
-import { now, secsBackward } from "./utils";
+import { now, secsBackward, toDate, getFromCacheOrFetch, joinCaheKeyStr } from "./utils";
+import { FetchType } from "./options";
+import { Parser } from "./params";
+import { LRUCache, MongoCacheFallbackClient } from "./cache";
 
 interface Header {
     url: string,
@@ -140,6 +143,16 @@ export { InstagramPostSchema, CommentSchema, MusicInfoSchema };
 type Unexpected = Record<string ,any|unknown>;
 type InstagramActorOutput = Array<InstagramPost | Header | Unexpected>;
 
+interface Input{
+    fetch_type: string,
+    channels: string[],
+    limit?: number,
+    from?: string,
+    to?: string,
+    sort?: string
+    max_items?: number,
+}; 
+
 interface InstagramActorResultForChannel {
     output: InstagramActorOutput,
     channel: string,
@@ -189,21 +202,23 @@ class DataFormatError extends Error {
     }
 }
 
-class InstagramApifyWrapper {
+class InstagramApifyWrapper<K, V> {
     private client: ApifyClient;
+    private cache: LRUCache<K, V>;
     private config: Config;
 
-    constructor(config: Config) {
+    constructor(config: Config, cache: LRUCache<K, V>) {
         this.client = new ApifyClient({
             token: config.items.apifyConfig.token
         });
+        this.cache = cache;
         this.config = config
     }
 
     async scrapeInstagramChannel(channel: string,): Promise<InstagramActorOutput> {
         
         // Prepare Actor input
-        info("Building inputs...");
+        info(`Building inputs for Actor for Channel=${channel}`);
         const input = {
             "directUrls": [
                 `${this.config.items.instagramActorConfig.baseUrl}/${channel}/`
@@ -215,16 +230,22 @@ class InstagramApifyWrapper {
             "addParentData": this.config.items.instagramActorConfig.addParentData
         };
 
-        info("Requesting data...");
+        info("Requesting data. Url|: " + input.directUrls);
         try {
             // Run the Actor and wait for it to finish
+            info("Running Actor. | ID: " + this.config.items.apifyConfig.instagramActorId);
             const run: ActorRun = await this.client.actor(this.config.items.apifyConfig.instagramActorId).call(input);
+            
+            // Get the results from the Actor's dataset
+            info("Some data was returned from the Actor. | Collecting...");
             const { items } = await this.client.dataset(run.defaultDatasetId).listItems();
             
             // Log and parse each item
             const parsedItems: InstagramActorOutput = [];
+            let count = 0;
             for (const item of items) {
                 //console.dir(item);
+                debug(`Parsing itemn ${count++} of ${items.length}...`);
                 const parsedItem = await this.parseItem(item); // Use parseItem to handle the item
                 parsedItems.push(parsedItem);
             }
@@ -362,6 +383,25 @@ class InstagramApifyWrapper {
     private generateHashKey(channels: Array<string>, sort: string | null, maxItems: number | null): string {
         const baseString = JSON.stringify({ channels, sort, maxItems });
         return require('crypto').createHash('md5').update(baseString).digest('hex');
+    }
+
+    async poll(args: string): Promise<InstagramActorResult> {
+        const fetchFn = async () => {
+            const {fetch_type, channels, from, to, sort, max_items}: Input = JSON.parse(args)
+            if (fetch_type && FetchType.fromString(fetch_type) === FetchType.Instagram) {
+                try {
+                    return await this.scrape(channels, toDate(from), toDate(to), sort, max_items)
+                } catch (error: any) {
+                    error("Failed to poll Instagram data", error);
+                    throw error;
+                }
+            } else {
+                error("Invalid fetch type", fetch_type);
+                throw new Error(`Unsupported fetch type: ${fetch_type}`);
+            }
+        }
+        const key = joinCaheKeyStr("instagram", args);
+        return await getFromCacheOrFetch(key, this.cache, fetchFn);
     }
 
 
