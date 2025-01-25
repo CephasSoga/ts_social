@@ -2,19 +2,11 @@ import {z, ZodError } from "zod";
 import { ApifyClient, ActorRun } from 'apify-client';
 import Config from './config';
 import { info, debug, error, warn } from './logging';
-import { now, toDate } from "./utils";
-import { secsBackward } from "./utils";
+import { getFromCacheOrFetch, joinCaheKeyStr, now, secsBackward } from "./utils";
 import { FetchType } from "./options";
+import { LRUCache } from "./cache";
 
-/**
- * RedditScrapingError class.
- * Custom error class for handling scraping-related errors.
- */
 class RedditScrapingError extends Error {
-    /**
-     * RedditScrapingError class.
-     * Custom error class for handling scraping-related errors.
-     */
     public subreddit?;
     public params?;
     constructor(message: string, subreddit?: string, params?: any) {
@@ -26,10 +18,6 @@ class RedditScrapingError extends Error {
     }
 }
 
-/**
- * DataFormatError class.
- * Custom error class for handling data format validation errors.
- */
 class DataFormatError extends Error {
     public invalidFields?: Record<string, any>; // Details of fields that failed validation
     public context?: string; // Context or location of the error (e.g., method name)
@@ -37,13 +25,6 @@ class DataFormatError extends Error {
     public expected: any;
     public received: any;
 
-    /**
-     * Creates an instance of DataFormatError.
-     * @param message - The error message.
-     * @param invalidFields - Optional details about fields that failed validation.
-     * @param context - Optional context information (e.g., method name or module).
-     * @param rawData - Optional raw data that caused the validation error.
-     */
     constructor(
         message: string,
         expected: any,
@@ -63,12 +44,6 @@ class DataFormatError extends Error {
 }
 
 
-/**
- * Community - if the returned data type is `community`
- * Post - if the returned datatype is `post`
- * Comment - if the returned type is `comment`
- * Null - if its null or undefined
-*/
 enum DataType {
     Community = "community",
     Post = "post",
@@ -76,12 +51,6 @@ enum DataType {
     Null = "null",
 }
 
-/**
- * Rule interface.
- * This interface defines the structure of a rule associated with a community.
- * It includes properties such as priority, type, description, short name,
- * violation reason, HTML representation of the description, and the creation date.
- */
 const RuleSchema = z.object({
     priority: z.number().nonnegative().default(0),
     kind: z.string().min(1).default("Unknown"),
@@ -96,12 +65,6 @@ const RuleSchema = z.object({
 type Rule = z.infer<typeof RuleSchema>;
 
 
-/** CommunityData Schema.
- * This schema defines the structure of community data scraped from Reddit.
- * It includes properties such as community ID, name, display name, title, header image,
- * description, whether the community is over 18, creation date, date of scraping,
- * number of members, URL, data type, and an array of rules.
- */
 const CommunityDataSchema = z.object({
     id: z.string(),
     name: z.string().min(1).default(DataType.Null),
@@ -121,12 +84,6 @@ const CommunityDataSchema = z.object({
 type CommunityData = z.infer<typeof CommunityDataSchema>;
 
 
-/**
- * PostData Schema.
- * This schema defines the structure of post data scraped from Reddit.
- * It includes properties such as post ID, parsed ID, URL, username, user ID,
- * title, community name, body content, number of comments, upvotes, and more.
- */
 const PostSchema = z.object({
     id: z.string(),
     parsedId: z.string(),
@@ -154,12 +111,7 @@ const PostSchema = z.object({
 /** Builds upon `PostSchema`.*/
 type Post = z.infer<typeof PostDataSchema>;
 
-/**
- * Comment Schema.
- * This schema defines the structure of comment data scraped from Reddit.
- * It includes properties such as comment ID, parsed ID, URL, post ID, parent ID,
- * username, user ID, body content, number of replies, and more.
- */
+
 const CommentSchema = z.object({
     id: z.string(),
     parsedId: z.string(),
@@ -186,10 +138,7 @@ type Unexpected = Record<string, any>
 // PostData Schema (Union Type)
 const PostDataSchema = z.union([PostSchema, CommentSchema]);
 
-/**
- * RedditActorOutput interface.
- * Defines the output structure of the scrapeSubreddit method.
- */
+
 interface RedditActorOutput {
     communityData: CommunityData | Unexpected;
     postData: PostData[] | Unexpected;
@@ -210,57 +159,52 @@ interface RedditActorResult {
 interface Input {
     fetch_type: string,
     subreddits: Array<string>,
+    maxComments?: number,
+    maxCommunitiesCount?: number,
+    maxItems?: number,
+    sort?: string, 
     from: string,
     to: string,
 }
 
-/**
- * RedditApifyWrapper class.
- * This class facilitates scraping data from Reddit using the Apify platform.
- * It provides methods to scrape subreddit data, including community information and posts,
- * while ensuring data validation and error handling.
- */
-class RedditApifyWrapper {
+class RedditApifyWrapper<K, V>{
     private client: ApifyClient;
+    private cache: LRUCache<K, V>;
     private config: Config;
+    private configurations;
 
-    /**
-     * Creates an instance of RedditApifyWrapper.
-     * @param config - Configuration settings for the Apify client, including API tokens and proxy settings.
-     */
-    constructor(config: Config){
+
+    constructor(config: Config, cache: LRUCache<K, V>){
         this.client = new ApifyClient({
             token: config.items.apifyConfig.token
         });
-        this.config = config;
+        this.cache = cache;
+        this.config = config
+        this.configurations = this.config.items.redditActorConfig;
     }
 
-    /**
-     * Scrapes data from a specified subreddit.
-     * @param subreddit - The name of the subreddit to scrape (e.g., "news").
-     * @returns A promise that resolves to an object containing community data and post data.
-     * @throws RedditScrapingError if the scraping process fails.
-     */
     async scrapeSubreddit(
         subreddit: string,
+        maxComments?: number,
+        maxCommunitiesCount?: number,
+        maxItems?: number,
+        sort?: string,
     ): Promise<RedditActorOutput> {
     
-        info("Building inputs...");
-        const input = {
-            startUrls: [{ url: `https://www.reddit.com/r/${subreddit}/` }],
-            sort: this.config.items.redditActorConfig.sort,
-            maxItems: this.config.items.redditActorConfig.maxItems,
-            proxy: {
-                useApifyProxy: this.config.items.proxyConfig.useApifyProxy,
-                apifyProxyGroups: this.config.items.proxyConfig.apifyProxyGroups,
-            },
-        };
+        // Build Actor inputs
+        info(`Building Actor inputs for subreddit=${subreddit}...`);
+        const input = this.buildActorInput(subreddit, maxComments, maxCommunitiesCount, maxItems, sort);
     
-       info("Requesting data...");
+       info("Requesting data. | Url: " + input.startUrls[0].url);
         try {
-            const run: ActorRun = await this.client.actor(this.config.items.apifyConfig.redditActorId).call(input);
+            const actorID = this.config.items.apifyConfig.redditActorId;
+            // Run Actor and wait for result.
+            info("Running Reddit Actor. | ID: " + actorID);
+            const run: ActorRun = await this.client.actor(actorID).call(input);
             const { items } = await this.client.dataset(run.defaultDatasetId).listItems();
-    
+            // Alert for data.
+            info("Some data was fetched. | Collecting...");
+
             if (!Array.isArray(items) || items.length === 0) {
                 throw new DataFormatError(
                     "Unexpected format: No items returned from scraping.",
@@ -274,37 +218,10 @@ class RedditApifyWrapper {
     
             info("Parsing outputs...");
             // Validate and parse the first item as CommunityData
-            const communityDataResult = CommunityDataSchema.safeParse(items[0]);
-            const communityData = communityDataResult.success
-                ? communityDataResult.data
-                : (warn(
-                      "Community data validation failed. Falling back to raw data.",
-                      JSON.stringify({ issues: communityDataResult.error.errors })
-                  ),
-                  items[0] as Unexpected); // Fallback to raw data.
-    
-            // Validate and parse the rest as PostData[]
-            const postData = await Promise.all(
-                items.slice(1).map(async (item) => {
-                    try{
-                        const result = PostDataSchema.safeParse(item);
-                        if (result.success) {
-                            return result.data;
-                        } else {
-                            warn("Post data validation failed.", JSON.stringify({
-                                issues: result.error.errors,
-                                item,
-                            }));
-                            return item; // Fallback to raw data
-                        }
-                    } catch (error: any) {
-                        return null;
-                    }
-                })
-            );
-            return { communityData, postData };
-        } catch (error: any) {
-            error("Failed to scrape subreddit.", error);
+            return await this.parseItems(items)
+            
+        } catch (err: any) {
+            error("Failed to scrape subreddit.", err);
             throw new RedditScrapingError(
                 "Reddit scraping failed",
                 subreddit,
@@ -313,62 +230,141 @@ class RedditApifyWrapper {
         }
     }
 
+    buildActorInput(
+        subreddit: string,
+        maxComments?: number,
+        maxCommunitiesCount?: number,
+        maxItems?: number,
+        sort?: string,
+    )
+    {   
+        const configurations = this.configurations;
+
+        maxComments = maxComments? maxComments : configurations.maxComments;
+        maxCommunitiesCount = maxCommunitiesCount? maxCommunitiesCount : configurations.maxCommunitiesCount;
+        maxItems = maxItems? maxItems : configurations.maxItems;
+        sort = sort? sort : configurations.sort
+
+        const input = {
+            "debugMode": false,
+            "includeNSFW": configurations.includeNSFW,
+            "maxComments": maxComments,
+            "maxCommunitiesCount": maxCommunitiesCount,
+            "maxItems": maxItems,
+            "maxPostCount": configurations.maxPostCount,
+            "maxUserCount": configurations.maxUserCount,
+            "proxy": {
+                "useApifyProxy": this.config.items.proxyConfig.useApifyProxy,
+                "apifyProxyGroups": this.config.items.proxyConfig.apifyProxyGroups
+            },
+            "scrollTimeout": configurations.scrollTimeout,
+            "searchComments": configurations.searchComments,
+            "searchCommunities": configurations.searchCommunities,
+            "searchPosts": configurations.searchPosts,
+            "searchUsers": configurations.searchUsers,
+            "skipComments": configurations.skipComments,
+            "skipCommunity": configurations.skipCommunity,
+            "skipUserPosts": configurations.skipUserPosts,
+            "sort": sort,
+            "startUrls": [
+                {
+                    "url": `https://www.reddit.com/r/${subreddit}/`,
+                    "method": "GET"
+                }
+            ]
+        }
+
+        return input;
+    }
+
+    async parseItems(items: any): Promise<RedditActorOutput> {
+        const communityDataResult = CommunityDataSchema.safeParse(items[0]);
+        const communityData = communityDataResult.success
+            ? communityDataResult.data
+            : (warn(
+                    "Community data validation failed. Falling back to raw data.",
+                    JSON.stringify({ issues: communityDataResult.error.errors })
+                ),
+                items[0] as Unexpected); // Fallback to raw data.
+
+        // Validate and parse the rest as PostData[]
+        const postData = await Promise.all(
+            items.slice(1).map(async (item: any) => {
+                try{
+                    const result = PostDataSchema.safeParse(item);
+                    if (result.success) {
+                        return result.data;
+                    } else {
+                        warn("Post data validation failed.", JSON.stringify({
+                            issues: result.error.errors,
+                            item,
+                        }));
+                        return item; // Fallback to raw data
+                    }
+                } catch (err: any) {
+                    warn(`Error parsing items. |Error: ${err}| Returning <null>...`)
+                    return null;
+                }
+            })
+        );
+        return { communityData, postData };
+    }
+
     async scrape(
-        subreddits: Array<string>, 
-        from: Date,
-        to: Date,
+        subreddits: Array<string>,
+        maxComments?: number,
+        maxCommunitiesCount?: number,
+        maxItems?: number,
+        sort?: string, 
+        from?: string,
+        to?: string,
     ): Promise<RedditActorResult> {
         info("Starting scrape for multiple subreddits...");
         const results: RedditActorResultForSubreddit[] = [];
+        const from_ = from? new Date(from) : now();
+        const to_ = to? new Date(to) : secsBackward(this.config.items.control.timeRangeSecs);
     
         // Iterate through the subreddits array and scrape each one
         for (const subreddit of subreddits) {
             try {
                 info(`Scraping subreddit: ${subreddit}`);
-                const data = await this.scrapeSubreddit(subreddit);
+                const data = await this.scrapeSubreddit(
+                    subreddit,
+                    maxComments,
+                    maxCommunitiesCount,
+                    maxItems,
+                    sort, 
+                );
 
                 // Filter post data by timestamp
-                const filteredData = this.filterRedditActorOutputByTimestamp(data, from, to);
+                const filteredData = this.filterByTimestamp(data, from_, to_);
 
                 results.push({subreddit: subreddit, output: filteredData});
 
 
                 info(`Successfully scraped subreddit: ${subreddit}`);
-            } catch (error: any) {
-                error(`Failed to scrape subreddit: ${subreddit}`, error);
+            } catch (err: any) {
+                error(`Failed to scrape subreddit: ${subreddit}`, err);
                 results.push({subreddit: subreddit, output: null})
             }
         }    
 
         info("Finished scraping all subreddits.");
         return {
-            hashKey: this.generateHashKey(subreddits, 
-                this.config.items.redditActorConfig.sort,
-                this.config.items.redditActorConfig.maxItems
-            ),
+            hashKey: this.generateHashKey(subreddits, sort, maxItems),
             results: results,
-            from,
-            to,
+            from: from_,
+            to: to_,
         };
     }
 
-    /**
-     * Helper function to generate a unique hash key for the scrape operation
-     */
-    private generateHashKey(subreddits: Array<string>, sort: string | null, maxItems: number | null): string {
+
+    private generateHashKey(subreddits: Array<string>, sort?: string | null, maxItems?: number | null): string {
         const baseString = JSON.stringify({ subreddits, sort, maxItems });
         return require('crypto').createHash('md5').update(baseString).digest('hex');
     }
 
-
-    /**
-     * Filters an array of `PostData` or `Unexpected` objects by a timestamp range.
-     * @param data - Array of `PostData` or `Unexpected` objects containing a `createdAt` or `scrapedAt` timestamp.
-     * @param from - Start date (inclusive) for the filtering.
-     * @param to - End date (inclusive) for the filtering.
-     * @returns An array of `PostData` objects that fall within the specified range.
-     */
-    private filterByTimestamp(
+    private filterByTimestamp_(
         data: Array<PostData | Unexpected>,
         from: Date,
         to: Date
@@ -387,59 +383,62 @@ class RedditApifyWrapper {
         }) as Array<PostData>;
     }
     
-    /**
-     * Filters the `RedditActorOutput` by timestamp for both `communityData` and `postData`.
-     * @param output - The `RedditActorOutput` object containing community and post data.
-     * @param from - Start date (inclusive) for the filtering.
-     * @param to - End date (inclusive) for the filtering.
-     * @returns A new `RedditActorOutput` with filtered data.
-     */
-    private filterRedditActorOutputByTimestamp(
+    private filterByTimestamp(
         output: RedditActorOutput,
         from: Date,
         to: Date
     ): RedditActorOutput {
         // Filter communityData if it's not an Unexpected type
         const communityData = 'createdAt' in output.communityData || 'scrapedAt' in output.communityData
-            ? this.filterByTimestamp([output.communityData], from, to)[0] || output.communityData
+            ? this.filterByTimestamp_([output.communityData], from, to)[0] || output.communityData
             : output.communityData;
     
         // Filter postData if it's an array of PostData
         const postData = Array.isArray(output.postData)
-            ? this.filterByTimestamp(output.postData, from, to)
+            ? this.filterByTimestamp_(output.postData, from, to)
             : output.postData;
     
         return { communityData, postData };
     }
 
     async poll( args: string): Promise<RedditActorResult> {
-        const { fetch_type, subreddits, from, to }: Input = JSON.parse(args);
-        if (fetch_type && FetchType.fromString(fetch_type) === FetchType.Reddit) {
-            try {
-                return await this.scrape(subreddits, toDate(from),  toDate(to))
-            } catch (error: any) {
-                error("Failed to poll for new data.", error);
-                throw error;
+        const key = joinCaheKeyStr("reddit", args);
+        const fetchFn = async (): Promise<RedditActorResult> => {
+            const { 
+                fetch_type, 
+                subreddits,
+                maxComments,
+                maxCommunitiesCount,
+                maxItems,
+                sort, 
+                from, 
+                to }: Input = JSON.parse(args);
+            if (!subreddits) {
+                error("`subreddits` fields is required.");
+                throw new RedditScrapingError("Missing field in parameters: `subreddit`");
+            }
+            if (fetch_type && FetchType.fromString(fetch_type) === FetchType.Reddit) {
+                try {
+                    return await this.scrape(subreddits,
+                        maxComments,
+                        maxCommunitiesCount,
+                        maxItems,
+                        sort, from, to
+                    )
+                } catch (err: any) {
+                    error("Failed to poll for new data.", err);
+                    throw err;
+                }
+            }
+            else {
+                error(`Unsupported fetch type: ${fetch_type}`)
+                throw new Error(`Unsupported fetch type: ${fetch_type}`);
             }
         }
-        else {
-            throw new Error(`Unsupported fetch type: ${fetch_type}`);
-        }
+
+        const res = getFromCacheOrFetch(key, this.cache, fetchFn);
+        return res;
     }
-
-    async collect(): Promise<RedditActorResult> {
-        info("Instagram Actor is started...");
-
-        const subreddits = this.config.items.redditActorConfig.subreddits;
-
-        const from = secsBackward(this.config.items.control.timeRangeSecs);
-        const to = now();
-
-        const result = this.scrape(subreddits, from, to);
-
-        return result;
-    }
-    
 }
 export default RedditApifyWrapper;
 

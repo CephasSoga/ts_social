@@ -5,6 +5,7 @@ import { config } from 'winston';
 import { FetchType } from './options';
 import { now, toDate } from "./utils";
 import { secsBackward } from "./utils";
+import { LRUCache } from './cache';
 
 type TwitterActorOutput = Record<any, any>;
 
@@ -22,15 +23,19 @@ interface Input{
     to: string,
 }
 
-class TwitterActorWrapper{
+class TwitterActorWrapper<K, V>{
     private client: ApifyClient;
+    private cache: LRUCache<K, V>;
     private config: Config;
+    private configurations;
 
-    constructor(config: Config){
+    constructor(config: Config, cache: LRUCache<K, V>){
         this.client = new ApifyClient({
             token: config.items.apifyConfig.token
         });
-        this.config = config
+        this.cache = cache;
+        this.config = config;
+        this.configurations= config.items.redditActorConfig;
     }
 
     async ScrapeTwitterChannel(channel: string): Promise<TwitterActorOutput> {

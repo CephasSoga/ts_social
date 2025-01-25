@@ -45,30 +45,30 @@ class WebSocketServer<K, V> {
                 const wraper = new InstagramApifyWrapper(this.config, this.cache);
                 try {
                     return await wraper.poll(JSON.stringify(args));
-                } catch (error: any) {
-                    error(`Error while polling Instagram: ${error.message}`);
+                } catch (err: any) {
+                    error(`Error while polling Instagram: ${err.message}`);
                     throw error;
                 }
             }
         );
         this.functions.set(
             'reddit_polling', async (args: Params) => {
-                const wraper = new RedditApifyWrapper(this.config);
+                const wraper = new RedditApifyWrapper(this.config, this.cache);
                 try {
                     return await wraper.poll(JSON.stringify(args));
-                } catch (error: any) {
-                    error(`Error while polling Reddit: ${error.message}`);
-                    throw error;
+                } catch (err: any) {
+                    error(`Error while polling Reddit: ${err.message}`);
+                    throw err;
                 }
             }
         ); 
         this.functions.set(
             'twitter_polling', async (args: Params) => {
-                const wraper = new TwitterActorWrapper(this.config);
+                const wraper = new TwitterActorWrapper(this.config, this.cache);
                 try {
                     return await wraper.poll(JSON.stringify(args));
-                } catch (error: any) {
-                    error(`Error while polling Twitter: ${error.message}`);
+                } catch (err: any) {
+                    error(`Error while polling Twitter: ${err.message}`);
                     throw error;
                 }
 
@@ -135,9 +135,9 @@ class WebSocketServer<K, V> {
             const resp = await this.respond(message)   
             // Send the JSON response back to the client
             ws.send(resp.toJson());
-        } catch (error: any) {
+        } catch (err: any) {
             error('Error responding to client:', error);
-            ws.send(WebSocketServer.error(Outcome.Failure, "Request could not be processed.", error).toJson());
+            ws.send(WebSocketServer.error(Outcome.Failure, "Request could not be processed.", err).toJson());
         }
             
     }
@@ -171,13 +171,13 @@ class WebSocketServer<K, V> {
             const taskArgs: TaskArgs = req.args.for_task!;
             debug("args: " + JSON.stringify(taskArgs, null, 2));
             const res = await this.handle(taskArgs);
-            debug("Server Response: " + JSON.stringify(res, null, 2));
+            debug("Server Response: " + res.status);
             return WebSocketServer.success(res);
-        } catch (error: any) {
+        } catch (err: any) {
             return WebSocketServer.error(
                 Outcome.Failure, 
                 "Failed to make a response for the request.", 
-                error
+                err
             );
         }
     }
@@ -210,7 +210,7 @@ class WebSocketServer<K, V> {
             const res = await func(params);
             return WebSocketServer.success(res);
         } catch (err: any) {
-            return WebSocketServer.error(Outcome.Failure, "Request failed.", err);
+            return WebSocketServer.error(Outcome.Failure, "Request failed.", err.message);
         } 
     }
 
@@ -222,7 +222,7 @@ class WebSocketServer<K, V> {
         return new ServerResponse(REQUEST_SUCCUESS, message);
     }
 
-    public static error(outcome: Outcome, message: any, reason?: string): ServerResponse {
+    public static error(outcome: Outcome, message: any, reason?: string|any): ServerResponse {
         let status;
         switch (outcome){
             case Outcome.Failure: status = REQUEST_FAILED; break;
