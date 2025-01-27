@@ -3,7 +3,7 @@ import Config from './config';
 import {info, debug, error, warn} from './logging';
 import { config } from 'winston';
 import { FetchType } from './options';
-import { now, toDate } from "./utils";
+import { getFromCacheOrFetch, joinCaheKeyStr, now, toDate } from "./utils";
 import { secsBackward } from "./utils";
 import { LRUCache } from './cache';
 
@@ -13,14 +13,24 @@ interface TwitterActorResult {
     hash: string,
     from: Date,
     to: Date,
-    outputs: TwitterActorOutput[],
+    outputs: TwitterActorOutput,
 }
 
 interface Input{
     fetch_type: string,
     channels: string[],
-    from: string,
-    to: string,
+    searchTerms?: string[], 
+    maxItems?: number, 
+    sort?: string, 
+    lang?: string, 
+    author?: string,
+    inReplyTo?: string,
+    mentioning?: string,
+    minimumRetweets?: number,
+    minimumFavorites?: number,
+    minimumReplies?: number,
+    from?: string,
+    to?: string
 }
 
 class TwitterActorWrapper<K, V>{
@@ -35,95 +45,142 @@ class TwitterActorWrapper<K, V>{
         });
         this.cache = cache;
         this.config = config;
-        this.configurations= config.items.redditActorConfig;
-    }
-
-    async ScrapeTwitterChannel(channel: string): Promise<TwitterActorOutput> {
-        info(`Scrapin channel [${channel}]...`);
-        // Prepare inputs
-        info("Building inputs...");
-        const input = {
-            "startUrls": [
-                `https://twitter.com/${channel}/`
-            ],
-            "searchTerms": this.config.items.twitterActorConfig.searchTerms,
-            "twitterHandles": this.config.items.twitterActorConfig.twitterHandles,
-            "conversationIds": this.config.items.twitterActorConfig.conversationIds,
-            "maxItems": this.config.items.twitterActorConfig.maxItems,
-            "sort": this.config.items.twitterActorConfig.sort,
-            "tweetLanguage": this.config.items.twitterActorConfig.tweetLanguage,
-            "author": this.config.items.twitterActorConfig.author,
-            "inReplyTo": this.config.items.twitterActorConfig.inReplyTo,
-            "mentioning": this.config.items.twitterActorConfig.mentioning,
-            "geotaggedNear": this.config.items.twitterActorConfig.geotaggedNear,
-            "withinRadius": this.config.items.twitterActorConfig.withinRadius,
-            "geocode": this.config.items.twitterActorConfig.geocode,
-            "placeObjectId": this.config.items.twitterActorConfig.placeObjectId,
-            "minimumRetweets": this.config.items.twitterActorConfig.minimumRetweets,
-            "minimumFavorites": this.config.items.twitterActorConfig.minimumFavorites,
-            "minimumReplies": this.config.items.twitterActorConfig.minimumReplies,
-            "start": this.config.items.twitterActorConfig.start,
-            "end": this.config.items.twitterActorConfig.end,
-            "customMapFunction": (object: any) => { return {...object} }
-        };
-
-        // Run the Actor and wait for it to finish
-        info("Requesting data...")
-        const run = await this.client.actor(this.config.items.apifyConfig.twitterActorId).call(input);
-
-        // Fetch and print Actor results from the run's dataset (if any)
-        debug('Results from dataset: ');
-        const { items } = await this.client.dataset(run.defaultDatasetId).listItems();
-        items.forEach((item) => {
-            debug("- " + item);
-        });
-
-        return {items};
+        this.configurations= config.items.twitterActorConfig;
     }
 
     async scrape(
-        channels: Array<string>,
-        from: Date,
-        to: Date
+        channels: string[],
+        searchTerms?: string[], 
+        maxItems?: number, 
+        sort?: string, 
+        lang?: string, 
+        author?: string,
+        inReplyTo?: string,
+        mentioning?: string,
+        minimumRetweets?: number,
+        minimumFavorites?: number,
+        minimumReplies?: number,
+        from?: string,
+        to?: string,
     ): Promise<TwitterActorResult> {
-        info("Starting scrape for multiple channels...");
+        // Prepare inputs
+        info(`Building Actor inputs for channel=${channels}..."`);
+        const input = this.buildInput(
+            channels,
+            searchTerms, 
+            maxItems, 
+            sort, 
+            lang, 
+            author,
+            inReplyTo,
+            mentioning,
+            minimumRetweets,
+            minimumFavorites,
+            minimumReplies,
+            from,
+            to,
+        );
 
-        // Iterate over channels ans scrape each one
-        // then aggregate result in Twitter result interface.
-        const outputs: TwitterActorOutput[] = [];
+        let outputs: TwitterActorOutput  = {}
 
-        for (const channel of channels) {
-            try {
-                info(`Scraping channel: ${channel}`);
-                
-                // Update the config with the given date range
-                this.config.items.twitterActorConfig.start = from.toISOString();
-                this.config.items.twitterActorConfig.end = to.toISOString();
-                
-                // Scrape the current channel
-                const output = await this.ScrapeTwitterChannel(channel);
-                outputs.push(output);
+        // Run the Actor and wait for it to finish
+        info(`Requesting data | Url: ${input.startUrls[0]}...`)
+        try {
+            const run = await this.client.actor(this.config.items.apifyConfig.twitterActorId).call(input);
 
-                info(`Successfully scraped channel: ${channel}`);
-            } catch (error: any) {
-                error(`Failed to scrape channel: ${channel}.`, error);
-            }
+            // Fetch and print Actor results from the run's dataset (if any)
+            debug('Results from dataset: ');
+            const { items } = await this.client.dataset(run.defaultDatasetId).listItems();
+            items.forEach((item) => {
+                debug("- " + item);
+            });
+
+            outputs = {items};
+        } catch (err: any) {
+            error(`Error scrapping channel=${channels} | Returning an <empty> object...`, err);
+            outputs = {};
         }
 
-        // Generate a hash key for the operation
-        const hash = this.generateHashKey(channels, this.config.items.twitterActorConfig.sort, this.config.items.twitterActorConfig.maxItems);
-
+        const hash = this.generateHashKey(channels, sort? sort: null, maxItems? maxItems: null);
+        const from_ = from? toDate(from) : secsBackward(this.config.items.control.timeRangeSecs);
+        const to_ = to? toDate(to) : now();
         // Build the TwitterActorResult
         const result: TwitterActorResult = {
             hash,
-            from,
-            to,
+            from: from_,
+            to: to_,
             outputs,
         };
 
         info(`Scraping complete. Generated hash: ${hash}`);
         return result;
+    }
 
+    makeUrl(channel: string): string {
+        return `https://twitter.com/${channel}/`;
+    }
+
+    buildInput(
+        channels: string[], 
+        searchTerms?: string[], 
+        maxItems?: number, 
+        sort?: string, 
+        lang?: string, 
+        author?: string,
+        inReplyTo?: string,
+        mentioning?: string,
+        minimumRetweets?: number,
+        minimumFavorites?: number,
+        minimumReplies?: number,
+        from?: string,
+        to?: string, 
+    ) {
+        const configurations = this.configurations;
+
+        // Default values for possibly undefined args.
+        maxItems = maxItems? maxItems : configurations.maxItems;
+        sort = sort? this.validateSort(sort!) : configurations.sort;
+        const from_ = from? toDate(from) : secsBackward(this.config.items.control.timeRangeSecs);
+        const to_ = to? toDate(to) : now();
+
+        // make startUrls
+       const urls = []
+        for (const channel of channels) {
+            let url = this.makeUrl(channel);
+            urls.push(url);
+        }
+
+        const input = {
+            "startUrls": urls,
+            "searchTerms": searchTerms,
+            "twitterHandles": configurations.twitterHandles,
+            "conversationIds": configurations.conversationIds,
+            "maxItems": maxItems,
+            "sort": sort,
+            "tweetLanguage": lang,
+            "author": author,
+            "inReplyTo":inReplyTo,
+            "mentioning": mentioning,
+            "minimumRetweets": minimumRetweets,
+            "minimumFavorites": minimumFavorites,
+            "minimumReplies": minimumReplies,
+            "start": from_,
+            "end": to_,
+            "customMapFunction": (object: any) => { return {...object} }
+        };
+        return input;
+    }
+
+    validateSort(sort?: string) {
+        if (sort) {
+            info(`Sorting results by: ${sort}`);
+            const validSortFields = ["Latest"] //Add more valid strings here;
+            if (!validSortFields.includes(sort)) {
+                throw new Error(`Invalid sort field: ${sort}. Allowed fields are ${validSortFields.join(", ")}`);
+            }
+            return sort
+        }
+        return undefined
     }
 
     /**
@@ -135,34 +192,50 @@ class TwitterActorWrapper<K, V>{
     }
 
     async poll(args: string): Promise<TwitterActorResult> {
-        const {fetch_type, channels, from, to}: Input = JSON.parse(args);
-        if (fetch_type && FetchType.fromString(fetch_type) === FetchType.Twitter) {
-            try {
-                return await this.scrape(channels, toDate(from), toDate(to));
-            } catch (error: any) {
-                error(`Failed to poll Twitter actor.`, error);
-                throw error;
+        const fetchFn = async(): Promise<TwitterActorResult> => {
+                const {
+                fetch_type,
+                channels,
+                searchTerms, 
+                maxItems, 
+                sort, 
+                lang, 
+                author,
+                inReplyTo,
+                mentioning,
+                minimumRetweets,
+                minimumFavorites,
+                minimumReplies,
+                from,
+                to,
+            }: Input = JSON.parse(args);
+            if (fetch_type && FetchType.fromString(fetch_type) === FetchType.Twitter) {
+                try {
+                    return await this.scrape(channels,
+                        searchTerms, 
+                        maxItems, 
+                        sort, 
+                        lang, 
+                        author,
+                        inReplyTo,
+                        mentioning,
+                        minimumRetweets,
+                        minimumFavorites,
+                        minimumReplies,
+                        from,
+                        to);
+                } catch (error: any) {
+                    error(`Failed to poll Twitter actor.`, error);
+                    throw error;
+                }
+            } else {
+                throw new Error(`Unsupported fecth type: ${fetch_type}`);
             }
-        } else {
-            throw new Error(`Unsupported fecth type: ${fetch_type}`);
         }
-    }
 
-    async collect(): Promise<TwitterActorResult> {
-        info("Twitter Actor is starting...");
-    
-        // Retrieve Twitter channels from configuration
-        const channels = this.config.items.twitterActorConfig.targetChannels;
-    
-        // Calculate the time range for scraping
-        const from = secsBackward(this.config.items.control.timeRangeSecs);
-        const to = now();
-    
-        // Perform the scraping
-        const result = await this.scrape(channels, from, to);
-    
-        info("Twitter Actor has completed scraping.");
-        return result;
+        const key = joinCaheKeyStr("twitter", args);
+        const res = await getFromCacheOrFetch(key, this.cache, fetchFn);
+        return res;
     }
 }
 

@@ -2,7 +2,7 @@ import {z, ZodError } from "zod";
 import { ApifyClient, ActorRun } from 'apify-client';
 import Config from './config';
 import { info, warn, error, debug } from "./logging";
-import { now, secsBackward, toDate, getFromCacheOrFetch, joinCaheKeyStr } from "./utils";
+import { now, secsBackward, toDate, getFromCacheOrFetch, joinCaheKeyStr, toJsonStr } from "./utils";
 import { FetchType } from "./options";
 import { Parser } from "./params";
 import { LRUCache, MongoCacheFallbackClient } from "./cache";
@@ -154,14 +154,11 @@ interface Input{
     to?: string,
 }; 
 
-interface InstagramActorResultForChannel {
-    output: InstagramActorOutput,
-    channel: string,
-}
+
 
 interface InstagramActorResult {
     hashKey: string,
-    results: Array<InstagramActorResultForChannel>
+    results: InstagramActorOutput,//Array<InstagramActorResultForChannel>
     from: Date,
     to: Date
 }
@@ -218,16 +215,16 @@ class InstagramApifyWrapper<K, V> {
         this.configurations = this.config.items.instagramActorConfig;
     }
 
-    async scrapeInstagramChannel(
-        channel: string, 
+    async scrapeWithNoFilter(
+        channels: string[], 
         sort?: string, 
         resultsLimit?: number,
         searchLimit?: number, 
         searchType?: string
     ): Promise<InstagramActorOutput> {
         // Prepare Actor input
-        info(`Building inputs for Actor for Channel=${channel}...`);
-        const input = this.builActorInput(channel, sort, resultsLimit, searchLimit, searchType);
+        info(`Building inputs for Actor for Channel=${channels}...`);
+        const input = this.builActorInput(channels, sort, resultsLimit, searchLimit, searchType);
 
         info("Requesting data. | Url: " + input.directUrls);
         try {
@@ -270,8 +267,8 @@ class InstagramApifyWrapper<K, V> {
 
         } catch (err: any) {
             const actorError = new InstagramScrapingError(
-                `Actor failed to scrape channel <${channel}>`,
-                channel,
+                `Actor failed to scrape channel <${channels}>`,
+                toJsonStr(channels),
                 { params: this.config.getItems() }
             );
         
@@ -297,15 +294,21 @@ class InstagramApifyWrapper<K, V> {
         return item as Unexpected;
     }
 
+    makeUrl(channel: string): string {
+        info(`Making <${channel}> url available for the request...`);
+        const configurations = this.configurations; 
+        return `${configurations.baseUrl}/${channel}/`
+    }
+
     builActorInput(
-        channel: string, 
+        channels: string[], 
         sort?: string, 
         resultsLimit?: number,
         searchLimit?: number, 
         searchType?: string) 
     {
         // Validate sort arg.
-        info("Validating Args...")
+        info("Validating Args. | Default args will be provided if some are missing.")
         sort = this.validateSort(sort);
 
         const configurations = this.configurations; 
@@ -314,10 +317,14 @@ class InstagramApifyWrapper<K, V> {
         searchLimit = searchLimit? searchLimit: configurations.searchLimit;
         searchType = searchType? searchType: configurations.searchType;
 
+        const urls : string[] = [];
+        for (const channel of channels) {
+            let url = this.makeUrl(channel);
+            urls.push(url);
+        }
+
         const input = {
-            "directUrls": [
-                `${configurations.baseUrl}/${channel}/`
-            ],
+            "directUrls": urls,
             "resultsType": configurations.resultsType,
             "resultsLimit": resultsLimit,
             "searchType": searchType,
@@ -349,35 +356,28 @@ class InstagramApifyWrapper<K, V> {
         from?: string,
         to?: string,
     ): Promise<InstagramActorResult> {
-        const results: Array<InstagramActorResultForChannel> = [];
+        let results: InstagramActorOutput = [];
         const from_ = from? new Date(from) : now();
         const to_ = to? new Date(to) : secsBackward(this.config.items.control.timeRangeSecs);
+
+        try {
     
-        for (const channel of channels) {
-            try {
-                info(`Scraping channel: ${channel}`);
-                const output = await this.scrapeInstagramChannel(
-                    channel,
-                    sort,
-                    resultsLimit,
-                    searchLimit,
-                    searchType
-                );
-                // Apply timestamp filtering
-                const filteredOutput = this.filterByTimestamp(output, from_, to_);
-
-                results.push({
-                    channel,
-                    output: filteredOutput,
-                });
-
+            const output = await this.scrapeWithNoFilter(channels, 
+                sort, 
+                resultsLimit,
+                searchLimit, 
+                searchType,
+            );
+            const filteredOutput = this.filterByTimestamp(output, from_, to_);
+            results = filteredOutput;
             } catch (err: any) {
                 error(
-                    `Failed to scrape channel: ${channel}`,
-                    error instanceof InstagramScrapingError ? error : new InstagramScrapingError(err.message, channel)
+                    `Failed to scrape channel: ${channels}`,
+                    err instanceof InstagramScrapingError ? error : new InstagramScrapingError(err.message, toJsonStr(channels))
                 );
+                warn("Returning an <empty> array...");
+                results = []
             }
-        }
     
     
         info("Scraping completed.");
@@ -385,11 +385,12 @@ class InstagramApifyWrapper<K, V> {
             hashKey: this.generateHashKey(channels, sort ? sort : null, resultsLimit? resultsLimit : null),
             results,
             from: from_,
-            to: to_,
-        };
+            to: to_
+        }
     }
     
     private filterByTimestamp(output: InstagramActorOutput, from: Date, to: Date): InstagramActorOutput {
+        info(`Filtering items by date. | From: <${from}> & To: <${to}>`);
         return output.filter((item: InstagramPost | Header | Unexpected) => {
             const itemTimestamp = (item as any).timestamp;
             if (itemTimestamp) {
