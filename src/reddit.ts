@@ -2,7 +2,7 @@ import {z, ZodError } from "zod";
 import { ApifyClient, ActorRun } from 'apify-client';
 import Config from './config';
 import { info, debug, error, warn } from './logging';
-import { getFromCacheOrFetch, joinCaheKeyStr, now, secsBackward } from "./utils";
+import { getFromCacheOrFetch, joinCaheKeyStr, now, secsBackward, toJsonStr } from "./utils";
 import { FetchType } from "./options";
 import { LRUCache } from "./cache";
 
@@ -151,7 +151,7 @@ interface RedditActorResultForSubreddit {
 
 interface RedditActorResult {
     hashKey: string,
-    results: Array<RedditActorResultForSubreddit> | null,
+    results: RedditActorOutput | null, //Array<RedditActorResultForSubreddit> | null,
     from: Date,
     to: Date,
 }
@@ -183,8 +183,8 @@ class RedditApifyWrapper<K, V>{
         this.configurations = this.config.items.redditActorConfig;
     }
 
-    async scrapeSubreddit(
-        subreddit: string,
+    async scrapeWithNoFilter(
+        subreddits: string[],
         maxComments?: number,
         maxCommunitiesCount?: number,
         maxItems?: number,
@@ -192,8 +192,8 @@ class RedditApifyWrapper<K, V>{
     ): Promise<RedditActorOutput> {
     
         // Build Actor inputs
-        info(`Building Actor inputs for subreddit=${subreddit}...`);
-        const input = this.buildActorInput(subreddit, maxComments, maxCommunitiesCount, maxItems, sort);
+        info(`Building Actor inputs for subreddits=${subreddits}...`);
+        const input = this.buildActorInput(subreddits, maxComments, maxCommunitiesCount, maxItems, sort);
     
        info("Requesting data. | Url: " + input.startUrls[0].url);
         try {
@@ -224,20 +224,37 @@ class RedditApifyWrapper<K, V>{
             error("Failed to scrape subreddit.", err);
             throw new RedditScrapingError(
                 "Reddit scraping failed",
-                subreddit,
+                toJsonStr(subreddits),
                 {config: this.config.getItems()}
             );
         }
     }
 
+    makeUrl(subreddit: string) {
+        info(`Making <${subreddit}> url available for the request...`);
+        const baseUrl = "https://www.reddit.com/r";
+        return `${baseUrl}/${subreddit}/`;
+    }
+
     buildActorInput(
-        subreddit: string,
+        subreddits: string[],
         maxComments?: number,
         maxCommunitiesCount?: number,
         maxItems?: number,
         sort?: string,
     )
     {   
+        // build start Url
+        let urls: any[] = [];
+        for (const subreddit of subreddits){
+            const url = this.makeUrl(subreddit);
+            urls.push({
+                "url": url,
+                "method": "GET"
+
+            })
+        }
+
         const configurations = this.configurations;
 
         maxComments = maxComments? maxComments : configurations.maxComments;
@@ -266,12 +283,7 @@ class RedditApifyWrapper<K, V>{
             "skipCommunity": configurations.skipCommunity,
             "skipUserPosts": configurations.skipUserPosts,
             "sort": sort,
-            "startUrls": [
-                {
-                    "url": `https://www.reddit.com/r/${subreddit}/`,
-                    "method": "GET"
-                }
-            ]
+            "startUrls": urls,
         }
 
         return input;
@@ -320,34 +332,32 @@ class RedditApifyWrapper<K, V>{
         to?: string,
     ): Promise<RedditActorResult> {
         info("Starting scrape for multiple subreddits...");
-        const results: RedditActorResultForSubreddit[] = [];
+        let results: RedditActorOutput | null;
         const from_ = from? new Date(from) : now();
         const to_ = to? new Date(to) : secsBackward(this.config.items.control.timeRangeSecs);
     
         // Iterate through the subreddits array and scrape each one
-        for (const subreddit of subreddits) {
-            try {
-                info(`Scraping subreddit: ${subreddit}`);
-                const data = await this.scrapeSubreddit(
-                    subreddit,
-                    maxComments,
-                    maxCommunitiesCount,
-                    maxItems,
-                    sort, 
-                );
+        try {
+            info(`Scraping subreddit: ${subreddits}`);
+            const data = await this.scrapeWithNoFilter(
+                subreddits,
+                maxComments,
+                maxCommunitiesCount,
+                maxItems,
+                sort, 
+            );
 
-                // Filter post data by timestamp
-                const filteredData = this.filterByTimestamp(data, from_, to_);
+            // Filter post data by timestamp
+            const filteredData = this.filterByTimestamp(data, from_, to_);
 
-                results.push({subreddit: subreddit, output: filteredData});
+            results = filteredData;
 
 
-                info(`Successfully scraped subreddit: ${subreddit}`);
-            } catch (err: any) {
-                error(`Failed to scrape subreddit: ${subreddit}`, err);
-                results.push({subreddit: subreddit, output: null})
-            }
-        }    
+            info(`Successfully scraped subreddit: ${subreddits}`);
+        } catch (err: any) {
+            error(`Failed to scrape subreddit: ${subreddits}`, err);
+            results = null;
+        }  
 
         info("Finished scraping all subreddits.");
         return {
