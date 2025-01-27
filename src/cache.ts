@@ -1,5 +1,6 @@
 import { MongoClient, Collection } from "mongodb";
 import  Config from "./config";
+import { info, error, warn } from "./logging";
 
 type Document = Record<string, unknown>; // Define a generic document type
 type State = 0 | 1 | 2;
@@ -16,6 +17,7 @@ class LRUCache<K, V> {
         this.capacity = capacity;
         this.cache = new Map<K, V>();
         this.fallbackClient = fallbackClient;
+        this.fallbackClient.connect();
     }
 
     // Get a value from the cache
@@ -52,7 +54,7 @@ class LRUCache<K, V> {
                 // Save evicted value to MongoDB
                 await this.fallbackClient.put(lruKey as unknown as string, { value: lruValue });
             } catch (err) {
-                console.error("Failed to save to MongoDB:", err);
+                error("Failed to save to MongoDB:", err);
             }
 
             this.cache.delete(lruKey);
@@ -95,30 +97,30 @@ class MongoCacheFallbackClient {
         try {
             await this.client.connect();
             this.state = 1;
-            console.log("MongoCacheFallbackClient connected.");
+            info("MongoCacheFallbackClient connected.");
         } catch (err) {
             this.state = 0;
-            console.error("Failed to connect to MongoDB:", err);
+            error("Failed to connect to MongoDB:", err);
         }
     }
 
     async get(key: string): Promise<Document | null> {
         if (this.state !== 1) {
-            console.warn("MongoCacheFallbackClient is not connected.");
+            warn("MongoCacheFallbackClient is not connected.");
             return null;
         }
 
         try {
             return await this.collection.findOne({ key });
         } catch (err) {
-            console.error("MongoDB get operation failed:", err);
+            error("MongoDB get operation failed:", err);
             return null;
         }
     }
 
     async put(key: string, value: Document): Promise<void> {
         if (this.state !== 1) {
-            console.warn("MongoCacheFallbackClient is not connected.");
+            warn("MongoCacheFallbackClient is not connected.");
             return;
         }
 
@@ -129,7 +131,7 @@ class MongoCacheFallbackClient {
                 { upsert: true }
             );
         } catch (err) {
-            console.error("MongoDB put operation failed:", err);
+            error("MongoDB put operation failed:", err);
         }
     }
 }
